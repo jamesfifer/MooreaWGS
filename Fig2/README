@@ -1,1 +1,2 @@
-
+angsd_covmat_pcoa_dapc_JF.R was the script used for visualizing PCoAs and performing DAPCs from the covmat generated using angsd (see angsd_pcas_dapc.sh for how covmat was generated).
+calctheta.sh was used for Fig 2C (waterson's theta).

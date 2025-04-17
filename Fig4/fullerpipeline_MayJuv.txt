@@ -1,0 +1,235 @@
+#!/bin/bash
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N angsd  # job name, anything you want
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M james.e.fifer@gmail.com #your email
+#$ -m be
+
+
+#then create vcf file
+src="/projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/SRC"
+
+for i in MayJuvbamscl4vcf; do WC=$(wc -l $i | cut -f1 -d " "); WC08=$(echo "scale=2; $WC*0.8"|bc); WC08Final=$(echo $WC08|awk '{print int($1-0.5)}'); echo -e "\
+#!/bin/bash \n#$ -V # inherit the submission environment \n#$ -cwd # start job in submission directory
+#$ -N MayOctBaypass$i  # job name, anything you want
+#$ -P davieslab
+#$ -l h_rt=48:00:00 #maximum run time
+#$ -M james.e.fifer@gmail.com #your email
+#$ -m be
+#$ -pe omp 28 \n
+ID=\"/projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate\"
+cd \$ID
+GENOME_FASTA=/projectnb/wgsgrp/Reference/Ahyacinthus_genome_V1/Ahyacinthus.chrsV1.fasta
+
+FILTERS=\"-uniqueOnly 1 -remove_bads 1 -minMapQ 30 -minQ 35 -dosnpstat 1 -doHWE 1 -sb_pval 1e-3 -maxHetFreq 0.5 -hetbias_pval 1e-3 -skipTriallelic 1 -anc \$GENOME_FASTA -ref \$GENOME_FASTA -snp_pval 1e-5 -minMaf 0.05\"
+TODO=\"-doMajorMinor 1 -dobcf 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 4 -doPost 1 -doGlf 2\"
+
+/projectnb/davieslab/jfifer/Japan_rad/angsd/angsd  -b $i -GL 1 -P 28 -minInd $WC08Final \$FILTERS \$TODO -out MayJuvAllLoci">$src/MayJuvAllLoci.sh; done
+#convert bcf to vcf
+module load bcftools/2019-08-30_git63f4b93
+for i in MayJuvAllLoci.bcf; do bcftools view $i> ${i/%.bcf}.vcf; done
+
+
+#need to annotate vcf file and give SNP names otherwise downstream SNP IDs are all "."
+echo -e "\
+#!/bin/bash \n#$ -V # inherit the submission environment \n#$ -cwd # start job in submission directory
+#$ -N annotategwas  # job name, anything you want
+#$ -P davieslab
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M james.e.fifer@gmail.com #your email
+#$ -m be
+
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/
+
+module load htslib/1.16
+module load bcftools/1.9
+bcftools annotate --set-id '%CHROM\_%POS' MayJuvAllLoci.vcf >MayJuvAllLoci_annotated.vcf" >annotatevcf.sh
+
+## Doing .95 HC cutoff ##
+src="/projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/SRC"
+for i in MayJuvbamscl4vcf; do WC=$(wc -l $i | cut -f1 -d " "); WC08=$(echo "scale=2; $WC*0.8"|bc); WC08Final=$(echo $WC08|awk '{print int($1-0.5)}'); echo -e "\
+#!/bin/bash \n#$ -V # inherit the submission environment \n#$ -cwd # start job in submission directory
+#$ -N MayJuvBaypass$i  # job name, anything you want
+#$ -P davieslab
+#$ -l h_rt=48:00:00 #maximum run time
+#$ -M james.e.fifer@gmail.com #your email
+#$ -m be
+#$ -pe omp 28 \n
+ID=\"/projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate\"
+cd \$ID
+GENOME_FASTA=/projectnb/wgsgrp/Reference/Ahyacinthus_genome_V1/Ahyacinthus.chrsV1.fasta
+
+FILTERS=\"-uniqueOnly 1 -remove_bads 1 -minMapQ 30 -minQ 35 -dosnpstat 1 -doHWE 1 -sb_pval 1e-3 -maxHetFreq 0.5 -postCutoff 0.95 -hetbias_pval 1e-3 -skipTriallelic 1 -anc \$GENOME_FASTA -ref \$GENOME_FASTA -snp_pval 1e-5 -minMaf 0.05\"
+TODO=\"-doMajorMinor 1 -dobcf 1 -doMaf 1 -doCounts 1 -doPost 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 4 \"
+
+/projectnb/davieslab/jfifer/Japan_rad/angsd/angsd  -b $i -GL 1 -P 28 -minInd $WC08Final \$FILTERS \$TODO -out MayJuvAllLociHC">$src/MayJuvAllLoci.sh; done
+
+
+
+
+
+#######################################################################
+###Running glm GWAS###
+#create plink files
+module load plink2
+plink2 --vcf /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayJuvAllLoci_annotated.vcf --allow-extra-chr --out /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayJuv.plink.all
+
+#fixing trait and psam files
+#Add FID to trait and phenotype files
+#trait
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/
+ cut -f1 MayJuv.plink.all.psam >col1
+paste col1 MayJuv.plink.traits >tmp; mv tmp MayJuv.all.plink.traits
+#covars
+cut -f1 MayJuv.plink.all.psam >col1
+paste col1 MayJuvplink_covars>tmp; mv tmp MayJuvplink.all_covars
+
+
+awk 'FNR==NR{a[FNR]=$2; next} {print $1, a[FNR], $3, $4}' /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayJuv.all.plink.traits /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayJuv.plink.all.psam | awk '{$3=0} 1' | sed '2s/#//' >tmp; mv tmp /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayJuv.plink.all.psam
+
+#rungwas
+#GLM
+#linear
+#the following will automatically do log, to force linear you need to recode phenotypes as 2,3
+>runplink.sh
+echo -e '\
+#!/bin/bash \n#$ -V # inherit the submission environment \n#$ -cwd # start job in submission directory
+#$ -N normalgwas  # job name, anything you want
+#$ -P davieslab
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M james.e.fifer@gmail.com #your email
+#$ -m be
+#output is /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct.plink.all.BS.glm.linear
+#Logistic with odds ratio
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/
+module load plink2
+plink2 --pfile MayJuv.plink.all --geno 0.1 --maf 0.05 --pheno /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayJuv.all.plink.traits --covar /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayJuv.plink.all_covars --logistic --1 --allow-extra-chr --out /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayJuvplink.all'>runplink.sh
+#^Doing --1 tells plink you have coded binary as 0/1 (default is to expect 1/2)
+
+#grab pvals 0.01to 0.000001 (also make sure it is just ADD models) 0~$tq/All3Lanes/Analyses/Intermediate/MayJuvplink.all1~
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/
+
+
+for i in MayJuvplink.all.PrePost.glm.logistic; do grep ADD $i >tmp$i; head -n1 $i> header.$i; cat header.$i tmp$i > $i;rm -f header.$i; rm -f tmp$i; done
+
+for pval in 0.01 0.001 0.0001 0.00001 ; do awk -F'\t' "\$12 < $pval" /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayJuv.plink.all.MayJuv.glm.logistic >/projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayJuv.plink.all.MayJuv.glm.logistic.$pval;
+done
+
+
+
+for i in MayJuv*logistic.0*; do cut -f3  $i | tr '_' '\t' > $i.sites; done
+for i in MayOct2FR*logistic.0*;do cut -f3  $i | tr '_' '\t' > $i.sites; done
+
+grep -Ff MayJuv.plink.all.MayJuv.glm.logistic.0.01.sites MayOct.plink.all.PrePost.glm.logistic.0.01.sites > MayOctMayJuvOverlap.plink.0.01.sites
+grep -Ff MayJuv.plink.all.MayJuv.glm.logistic.0.01.sites MayOct2FR.plink.all.PrePost.glm.logistic.0.01.sites > MayOct2MayJuvOverlap.plink.0.01.sites
+
+>pgscalc
+for i in MayOct*logistic.0*1; do echo "Rscript --vanilla /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/SRC/PGS_MayOctJuvCompNull.R MayOctBeta=$i">>pgscalc; done 
+
+
+## Running the gwas holdouts with May PGS
+echo -e "\
+#!/bin/bash
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N mayjuvrunpgs  # job name, anything you want
+#$ -l h_rt=96:00:00
+#$ -M james.e.fifer@gmail.com #your email
+#$ -m be
+#$ -pe omp 18
+#$ -t 1-4:1
+
+module load R
+readarray -t CMD_ARRAY <  /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/pgscalc
+
+# bash indexes arrays from 0 but SGE_TASK_ID must start from 1.  Subtract 1 from the
+# SGE_TASK_ID to get the correct index into CMD_ARRAY
+INDEX=\$((\$SGE_TASK_ID-1))
+
+# Execute the command for this job array
+echo Executing command:  \"\${CMD_ARRAY[\$INDEX]}\"
+eval \"\${CMD_ARRAY[\$INDEX]}\"
+
+" >PGScalc.sh
+
+
+
+
+
+## Running 
+echo -e "\
+#!/bin/bash
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N mayjuvrunpgs  # job name, anything you want
+#$ -l h_rt=96:00:00
+#$ -M james.e.fifer@gmail.com #your email
+#$ -m be
+#$ -pe omp 18
+
+module load R
+Rscript --vanilla /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/SRC/PGS_MayOctJuvComp.R
+" >PGScalc.sh
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##10,000 permutations ##
+echo -e "\
+#!/bin/bash \n#$ -V # inherit the submission environment \n#$ -cwd # start job in submission directory
+#$ -N normalgwas  # job name, anything you want
+#$ -P davieslab
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M james.e.fifer@gmail.com #your email
+#$ -m be
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/
+ cut -d ' ' -f1 MayOct.plink.all.psam >col1
+for i in MayOct*rand*traits; do
+paste col1 \$i >tmp; mv tmp \$i; done " > run10kperm.sh
+
+#rungwas
+echo -e "\
+#!/bin/bash \n#$ -V # inherit the submission environment \n#$ -cwd # start job in submission directory
+#$ -N calcminP  # job name, anything you want
+#$ -P davieslab
+#$ -l h_rt=36:00:00 #maximum run time
+#$ -M james.e.fifer@gmail.com #your email
+#$ -m be
+#$ -pe omp 6
+cd $TMPDIR
+rm -f *
+cp /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/*rand*traits ./
+module load plink2
+for i in MayOct*rand*traits; do
+plink2 --pfile /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct.plink.all --geno 0.1 --maf 0.05 --pheno \$i \
+--covar /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOctplink.all_covars --logistic --1 \
+--allow-extra-chr --out \${i%.traits}; grep ADD \${i%.traits}.PrePost.glm.logistic >tmp\${i%.traits}.PrePost.glm.logistic; head -n1 \${i%.traits}.PrePost.glm.logistic > header.\${i%.traits}.PrePost.glm.logistic; cat header.\${i%.traits}.PrePost.glm.logistic tmp\${i%.traits}.PrePost.glm.logistic > \${i%.traits}.PrePost.glm.logistic;rm -f header.\${i%.traits}.PrePost.glm.logistic; rm -f tmp\${i%.traits}.PrePost.glm.logistic ;\
+awk 'NR > 1 { min = (\$NF < min || min == \"\") ? \$NF : min } END { print min }' \${i%.traits}.PrePost.glm.logistic >/projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/minp.\${i%.traits};rm -f \${i%.traits}.PrePost.glm.logistic; done
+
+ ">run10kperm_gwas.sh
+
+
+
+
+
+
+
+

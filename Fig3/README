@@ -1,1 +1,3 @@
 
+Generate the necessary vcf for Fig3A, B and C by first following the PGS_pipeline.txt. 
+Transform vcf into allele frequency file using convergentcorrelationpipeline.sh and then calculate statistic using ConvergentCorrelation.R

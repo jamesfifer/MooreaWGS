@@ -1,0 +1,515 @@
+#then create vcf file with a 95 GL threshold for hardcalling
+src="/projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/SRC"
+
+for i in MayOctbamscl4vcf; do WC=$(wc -l $i | cut -f1 -d " "); WC08=$(echo "scale=2; $WC*0.8"|bc); WC08Final=$(echo $WC08|awk '{print int($1-0.5)}'); echo -e "\
+#!/bin/bash \n#$ -V # inherit the submission environment \n#$ -cwd # start job in submission directory
+#$ -N MayOctBaypass$i  # job name, anything you want
+#$ -P davieslab
+#$ -l h_rt=48:00:00 #maximum run time
+#$ -M james.e.fifer@gmail.com #your email
+#$ -m be
+#$ -pe omp 28 \n
+ID=\"/projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate\"
+cd \$ID
+GENOME_FASTA=/projectnb/wgsgrp/Reference/Ahyacinthus_genome_V1/Ahyacinthus.chrsV1.fasta
+
+FILTERS=\"-uniqueOnly 1 -remove_bads 1 -minMapQ 30 -minQ 35 -dosnpstat 1 -doHWE 1 -sb_pval 1e-3 -maxHetFreq 0.5 -postCutoff 0.95 -hetbias_pval 1e-3 -skipTriallelic 1 -anc \$GENOME_FASTA -ref \$GENOME_FASTA -snp_pval 1e-5 -minMaf 0.05\"
+TODO=\"-doMajorMinor 1 -dobcf 1 -doMaf 1 -doCounts 1 -doPost 1 -makeMatrix 1 -doIBS 1 -doCov 1 -doGeno 4 \"
+
+/projectnb/davieslab/jfifer/Japan_rad/angsd/angsd  -b $i -GL 1 -P 28 -minInd $WC08Final \$FILTERS \$TODO -out MayOctAllLociHC">$src/MayOctAllLoci.sh; done
+
+module load bcftools/2019-08-30_git63f4b93
+for i in MayOctAllLociHC.bcf; do bcftools view $i> ${i/%.bcf}.vcf; done
+
+#need to annotate vcf file and give SNP names otherwise downstream SNP IDs are all "."
+echo -e "\
+#!/bin/bash \n#$ -V # inherit the submission environment \n#$ -cwd # start job in submission directory
+#$ -N annotategwas  # job name, anything you want
+#$ -P davieslab
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M james.e.fifer@gmail.com #your email
+#$ -m be
+
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/
+
+module load htslib/1.16
+module load bcftools/1.9
+for i in MayOctAllLociHC.bcf; do bcftools view \$i> \${i/%.bcf}.vcf; done
+bcftools annotate --set-id '%CHROM\_%POS' MayOctAllLociHC.vcf >MayOctAllLociHC_annotated.vcf" >annotatevcf.sh
+
+
+
+#######################################################################
+###Running glm GWAS###
+>runplink.sh
+echo -e '\
+#!/bin/bash \n#$ -V # inherit the submission environment \n#$ -cwd # start job in submission directory
+#$ -N normalgwas  # job name, anything you want
+#$ -P davieslab
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M james.e.fifer@gmail.com #your email
+#$ -m be
+#subset vcf
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/
+module load vcftools
+vcftools --vcf /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOctAllLociHC_annotated.vcf --keep MayOct2bamscl4vcf --recode --out MayOct2AllLoci_annotated
+#>MayOctAllLociHC_annotated.vcf
+#create plink files
+module load plink2
+plink2 --vcf /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2AllLoci_annotated.recode.vcf --allow-extra-chr --out /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2.plink.all
+
+#fixing trait and psam files
+#Add FID to trait and phenotype files
+#trait
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/
+ cut -f1 MayOct2.plink.all.psam >col1
+paste col1 MayOct2.plink.traits >tmp; mv tmp MayOct2.all.plink.traits
+#covars
+cut -f1 MayOct2.plink.all.psam >col1
+paste col1 MayOct2plink_covars>tmp; mv tmp MayOct2plink.all_covars
+
+
+awk 'FNR==NR{a[FNR]=$2; next} {print $1, a[FNR], $3, $4}' /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2.all.plink.traits /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2.plink.all.psam | awk '{$3=0} 1' | sed '2s/#//' >tmp; mv tmp /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2.plink.all.psam
+##Finding individuals with >10% missing genos that are present in >90% of samples
+plink2 --pfile MayOct2.plink.all --geno 0.1 --maf 0.05 --mind 0.1 --missing --allow-extra-chr --out MayOct2.90.90
+
+plink2 --pfile MayOct2.plink.all --remove MayOct2.90.90.mindrem.id  --make-pgen --geno 0.1 --maf 0.05 --mind 0.1 --missing --allow-extra-chr --out MayOct2.filtered.90.90
+#NO Missing loci subset
+plink2 --pfile MayOct2.plink.all --remove MayOct2.90.90.mindrem.id  --make-pgen --geno 0 --maf 0.05  --missing --allow-extra-chr --out MayOct2.filtered.100.100
+
+plink2 --pfile MayOct2.filtered.100.100 --recode vcf --out MayOct2.filtered.100.100 --allow-extra-chr
+
+
+
+##Create a set of 
+
+#rungwas
+#GLM
+#linear
+#the following will automatically do log, to force linear you need to recode phenotypes as 2,3
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/
+#module load plink2
+#plink2 --pfile MayOct2.plink.all --geno 0.1 --maf 0.05 --pheno /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2.all.plink.traits --covar /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2plink.all_covars --linear --allow-extra-chr --out /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2.plink.all
+#output is /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2.plink.all.BS.glm.linear
+#Logistic with odds ratio
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/
+module load plink2
+plink2 --pfile MayOct2.plink.all --geno 0.1 --maf 0.05 --mind 0.1 --missing --pheno /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2.all.plink.traits --covar /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2plink.all_covars --logistic --1 --allow-extra-chr --out /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2.plink.all
+#^Doing --1 tells plink you have coded binary as 0/1 (default is to expect 1/2)
+#Compare without PC1 and PC2
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/
+module load plink2
+plink2 --pfile MayOct2.plink.all --geno 0.1 --maf 0.05 --mind 0.1 --missing --pheno /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2.all.plink.traits --covar /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2plink.all_covars_noPCs --logistic --1 --allow-extra-chr --out /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2.plink.all.noPCs
+
+
+
+#grab pvals 0.01to 0.000001 (also make sure it is just ADD models)
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/
+
+for i in MayOct2.plink.all.PrePost.glm.logistic; do grep ADD $i >tmp$i; head -n1 $i> header.$i; cat header.$i tmp$i > $i;rm -f header.$i; rm -f tmp$i; done
+
+for pval in 0.01 0.001 0.0001 0.00001 0.000001; do awk -F'\t' "\$12 < $pval" /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2.plink.all.PrePost.glm.logistic >MayOct2.plink.all.PrePost.glm.logistic.$pval;
+done '>runplink.sh
+#How many loci are missing genotype? *Note this is including the individuals that were eventually dropped*
+ awk '$3 == 0 {print $0}' MayOct2.plink.all.vmiss | wc -l
+#856385
+wc -l MayOct2.plink.all.vmiss
+#3069642
+
+
+
+
+
+
+
+##10,000 permutations ##
+echo -e "\
+#!/bin/bash \n#$ -V # inherit the submission environment \n#$ -cwd # start job in submission directory
+#$ -N normalgwas  # job name, anything you want
+#$ -P davieslab
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M james.e.fifer@gmail.com #your email
+#$ -m be
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/
+ cut -d ' ' -f1 MayOct2.plink.all.psam >col1
+for i in MayOct2*rand*traits; do
+paste col1 \$i >tmp; mv tmp \$i; done " > run10kperm.sh
+
+#rungwas
+echo -e "\
+#!/bin/bash \n#$ -V # inherit the submission environment \n#$ -cwd # start job in submission directory
+#$ -N calcminP  # job name, anything you want
+#$ -P davieslab
+#$ -l h_rt=36:00:00 #maximum run time
+#$ -M james.e.fifer@gmail.com #your email
+#$ -m be
+#$ -pe omp 6
+cd $TMPDIR
+rm -f *
+cp /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/*rand*traits ./
+module load plink2
+for i in MayOct2*rand*traits; do
+plink2 --pfile /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2.plink.all --geno 0.1 --maf 0.05 --pheno \$i \
+--covar /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2plink.all_covars --logistic --1 \
+--allow-extra-chr --out \${i%.traits}; grep ADD \${i%.traits}.PrePost.glm.logistic >tmp\${i%.traits}.PrePost.glm.logistic; head -n1 \${i%.traits}.PrePost.glm.logistic > header.\${i%.traits}.PrePost.glm.logistic; cat header.\${i%.traits}.PrePost.glm.logistic tmp\${i%.traits}.PrePost.glm.logistic > \${i%.traits}.PrePost.glm.logistic;rm -f header.\${i%.traits}.PrePost.glm.logistic; rm -f tmp\${i%.traits}.PrePost.glm.logistic ;\
+awk 'NR > 1 { min = (\$NF < min || min == \"\") ? \$NF : min } END { print min }' \${i%.traits}.PrePost.glm.logistic >/projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/minp.\${i%.traits};rm -f \${i%.traits}.PrePost.glm.logistic; done
+
+ ">run10kperm_gwas.sh
+
+
+
+
+
+
+
+
+
+####Holdouts
+#####Sample holdouts 100 times to generate PGS score####
+
+#generate 100 different vcfs of 15% of 231 (34) and 85% (197)
+#NOTE: sometimes this script acts weird if the directory already exists, recommend deleting existing directory before running/specifying new output_directory
+#!/bin/bash
+input_file="MayOct2bamscl4vcf"
+output_directory="MayOct2PGS_holdout"
+
+# Create the output directory if it doesn't exist
+rm -rf "$output_directory"
+mkdir -p "$output_directory"
+
+# Count the total number of lines in the input file
+total_lines=$(wc -l < "$input_file")
+
+# Loop 100 times
+for ((i=1; i<=100; i++)); do
+  # Generate a random sample of 34 line numbers and convert it into an array
+  sampled_lines=($(shuf -i 1-"$total_lines" -n 34 | sort -n))
+
+  # Create an array of all line numbers
+  all_lines=($(seq 1 "$total_lines"))
+
+  # Create the remaining_lines array by filtering elements not present in sampled_lines
+  remaining_lines=()
+  for element in "${all_lines[@]}"; do
+    if [[ ! " ${sampled_lines[*]} " =~ " $element " ]]; then
+      remaining_lines+=("$element")
+    fi
+  done
+
+  # Create the output file names
+  output_file1="$output_directory/${input_file}.holdout.REP.$i"
+  output_file2="$output_directory/${input_file}.train.REP.$i"
+
+  # Create the output files
+  touch "$output_file1"
+  touch "$output_file2"
+
+  # Loop through the line numbers and extract the corresponding lines from the input file
+  for line_number in ${sampled_lines[@]}; do
+    sed -n "${line_number}p" "$input_file" >> "$output_file1"
+  done
+
+  for line_number in ${remaining_lines[@]}; do
+    sed -n "${line_number}p" "$input_file" >> "$output_file2"
+  done
+done
+
+
+
+
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2PGS_holdout
+WC=`ls /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2PGS_holdout/*bamscl* | wc -l`
+echo -e "\
+#!/bin/bash \n#$ -V # inherit the submission environment \n#$ -cwd # start job in submission directory
+#$ -N tmptest  # job name, anything you want
+#$ -P davieslab
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M james.e.fifer@gmail.com #your email
+#$ -m be
+#$ -t 1-$WC:1
+module load vcftools
+module load plink2
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2PGS_holdout
+readarray -t CMD_ARRAY <  makevcfsubset
+
+# bash indexes arrays from 0 but SGE_TASK_ID must start from 1.  Subtract 1 from the
+# SGE_TASK_ID to get the correct index into CMD_ARRAY
+INDEX=\$((\$SGE_TASK_ID-1))
+
+# Execute the command for this job array
+echo Executing command:  \"\${CMD_ARRAY[\$INDEX]}\"
+eval \"\${CMD_ARRAY[\$INDEX]}\"
+"> /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/SRC/makevcf.makeplink.sh
+
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2PGS_holdout
+>makevcfsubset
+for i in *bamscl*; do
+echo "vcftools --gzvcf /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2AllLoci_annotated.recode.vcf --keep $i --recode --out $TMPDIR/${i//bamscl4vcf/}; cd $TMPDIR; plink2 --vcf ${i//bamscl4vcf/}.recode.vcf --allow-extra-chr --out /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2PGS_holdout/${i//bamscl4vcf/}" >>makevcfsubset; done
+
+#If any fail quick way to get t redos
+
+for i in *.glm.log; do
+ if grep -q "fewer tokens than expected" "$i"; then
+new_name=$(echo "$i" | sed 's/\.train\./bamscl.train./'| sed 's/\.glm\.log//')
+    echo $new_name >>redos;
+     fi; done
+
+#reformatting phenotyoe and covariate files
+#first removing path names from bam files and then subsetting trait/phenotype files tomatch bams
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2PGS_holdout
+for bamfile in *bamscl*; do sed -i 's/.*\///' $bamfile; done
+
+0~# Function to trim leading and trailing spaces
+trim() {
+    echo "$1" | sed 's/^[ \t]*//;s/[ \t]*$//'
+}
+
+# Loop through each bam file
+for bamfile in *bamscl*; do
+    # Create the output file names by replacing "bamscl" with an empty string in the bamfile name
+    traits_out="${bamfile//bamscl4vcf/}.traits"
+    covars_out="${bamfile//bamscl4vcf/}.covars"
+
+    # Extract the header and add it to the output files
+    head -n 1 ../MayOct2.all.plink.traits > "$traits_out"
+    head -n 1 ../MayOct2plink.all_covars > "$covars_out"
+
+    # Loop through each line in the bamfile
+    while read -r line; do
+        trimmed_line=$(trim "$line")
+        
+        # Handle both tab and space delimiters
+        awk -v pattern="$trimmed_line" 'BEGIN{FS="[ \t]+"} $2 == pattern' ../MayOct2.all.plink.traits >> "$traits_out"
+        awk -v pattern="$trimmed_line" 'BEGIN{FS="[ \t]+"} $2 == pattern' ../MayOct2plink.all_covars >> "$covars_out"
+    done < "$bamfile"
+done
+
+# Loop through each psam file
+for psamfile in *bamscl*; do
+    # Create a temporary file to store the matched lines
+    temp_file="${psamfile}.temp"
+    psam_out="${psamfile//bamscl4vcf/}.psam"
+
+    # Write the header to the temporary file
+    head -n 1 ../MayOct2.plink.all.psam > "$temp_file"
+
+    # Extract the first column from the psamfile
+    awk '{print $1}' "$psamfile" | while read -r line; do
+        # Trim whitespace from line
+        trimmed_line=$(trim "$line")
+
+        # Use awk to match the exact string from the second column in the psam file, handling both tab and space delimiters
+        awk -v pattern="$trimmed_line" 'BEGIN{FS="[ \t]+"} $2 == pattern' ../MayOct2.plink.all.psam >> "$temp_file"
+    done
+
+    # Move the temp file to overwrite the original psamfile
+    mv "$temp_file" "$psam_out"
+
+    echo "Processed $psamfile and saved to $psam_out"
+done
+1~
+
+
+
+#runn gwas
+#and then convert to bed file for LD clumping
+echo -e "\
+#!/bin/bash \n#$ -V # inherit the submission environment \n#$ -cwd # start job in submission directory
+#$ -N gwas  # job name, anything you want
+#$ -P davieslab
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M james.e.fifer@gmail.com #your email
+#$ -m be
+#$ -t 1-100:1
+
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2PGS_holdout
+module load plink2
+readarray -t CMD_ARRAY <  /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2PGS_holdout/runplinkgwas
+# bash indexes arrays from 0 but SGE_TASK_ID must start from 1.  Subtract 1 from the
+# SGE_TASK_ID to get the correct index into CMD_ARRAY
+INDEX=\$((\$SGE_TASK_ID-1))
+
+# Execute the command for this job array
+echo Executing command:  \"\${CMD_ARRAY[\$INDEX]}\"
+eval \"\${CMD_ARRAY[\$INDEX]}\"
+
+
+" >runplinkgwas.sh
+
+
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2PGS_holdout
+>runplinkgwas
+for bamfile in *bamscl*train*; do echo -e "\
+plink2 --pfile ${bamfile//bamscl4vcf/} --geno 0.1 --mind 0.1 --maf 0.05 --pheno ${bamfile//bamscl4vcf/}.traits --covar ${bamfile//bamscl4vcf/}.covars --logistic  --1 --allow-extra-chr --out ${bamfile//bamscl4vcf/}.glm; plink2 --pfile ${bamfile//bamscl4vcf/}  --allow-extra-chr --make-bed --out ${bamfile//bamscl4vcf/}" >>runplinkgwas; done
+
+
+#extract additive model lines
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2PGS_holdout
+
+for i in *.glm.logistic; do grep ADD $i >tmp$i; head -n1 $i> header.$i; cat header.$i tmp$i > $i;rm -f header.$i; rm -f tmp$i; done
+#Create null distribution here###!!!
+#Need to do LD clumping but with all loci
+#--clump-p1 1.0:
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2PGS_holdout
+>runclump
+for i in *bamscl*train*;do
+echo "plink --bfile ${i//bamscl4vcf/} --clump-p1 1.0 --clump-r2 0.2  --allow-extra-chr --clump ${i//bamscl4vcf/}.glm.PrePost.glm.logistic --clump-snp-field ID --out ${i//bamscl4vcf/}.allloci" >>runclump; done; done
+
+
+#do pvalue thresholding 0.1, 0.01,0.001,0.0001,0.00001 and  LD clumping
+echo -e "\
+#!/bin/bash \n#$ -V # inherit the submission environment \n#$ -cwd # start job in submission directory
+#$ -N clumping  # job name, anything you want
+#$ -P davieslab
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -m be
+#$ -t 1-800:1
+module load plink/1.90b6.4
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2PGS_holdout
+
+readarray -t CMD_ARRAY <  /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2PGS_holdout/runclump
+
+# bash indexes arrays from 0 but SGE_TASK_ID must start from 1.  Subtract 1 from the
+# SGE_TASK_ID to get the correct index into CMD_ARRAY
+INDEX=\$((\$SGE_TASK_ID-1))
+
+# Execute the command for this job array
+echo Executing command:  \"\${CMD_ARRAY[\$INDEX]}\"
+eval \"\${CMD_ARRAY[\$INDEX]}\"
+ " >runclump.sh
+
+
+
+#Normal LD clumping for other Loci
+echo -e "\
+#!/bin/bash
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N runpgs  # job name, anything you want
+#$ -l h_rt=36:00:00
+#$ -M james.e.fifer@gmail.com #your email
+#$ -m be
+#$ -pe omp 18
+module load R
+Rscript --vanilla /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/SRC/PGS_MayOct2PlinkNULL.R">calcnullPGS.sh
+
+
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2PGS_holdout
+>runclump
+for i in *bamscl*train*; do for pval in 0.3 0.2 0.1 0.01 0.001 0.0001 0.00001 0.000001; do
+echo "plink --bfile ${i//bamscl4vcf/} --clump-p1 $pval --clump-r2 0.2  --allow-extra-chr --clump ${i//bamscl4vcf/}.glm.PrePost.glm.logistic --clump-snp-field ID --out ${i//bamscl4vcf/}.$pval" >>runclump; done; done
+
+
+#do pvalue thresholding 0.1, 0.01,0.001,0.0001,0.00001 and  LD clumping
+echo -e "\
+#!/bin/bash \n#$ -V # inherit the submission environment \n#$ -cwd # start job in submission directory
+#$ -N clumping  # job name, anything you want
+#$ -P davieslab
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -m be
+#$ -t 1-800:1
+module load plink/1.90b6.4
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2PGS_holdout
+
+readarray -t CMD_ARRAY <  /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2PGS_holdout/runclump
+
+# bash indexes arrays from 0 but SGE_TASK_ID must start from 1.  Subtract 1 from the
+# SGE_TASK_ID to get the correct index into CMD_ARRAY
+INDEX=\$((\$SGE_TASK_ID-1))
+
+# Execute the command for this job array
+echo Executing command:  \"\${CMD_ARRAY[\$INDEX]}\"
+eval \"\${CMD_ARRAY[\$INDEX]}\"
+ " >runclump.sh
+
+
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2PGS_holdout
+for i in *1.clumped; do
+awk '{print $3}' $i >$i.SNP.list; done
+
+for i in *2.clumped; do
+awk '{print $3}' $i >$i.SNP.list; done
+
+for i in *3.clumped; do
+awk '{print $3}' $i >$i.SNP.list; done
+
+
+
+
+
+#get beta values for clumped dataset
+echo -e "\
+#!/bin/bash \n#$ -V # inherit the submission environment \n#$ -cwd # start job in submission directory
+#$ -N extractbetas  # job name, anything you want
+#$ -P davieslab
+#$ -l h_rt=12:00:00 #maximum run time
+#$ -M james.e.fifer@gmail.com #your email
+#$ -m be
+cd /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/Intermediate/MayOct2PGS_holdout
+
+for i in *bamscl*train*; do for pval in 0.3 0.2 0.1 0.01 0.001 0.0001 0.00001 0.000001;
+do awk 'FNR==NR {snp[\$1]=1; next} \$3 in snp' \${i//bamscl4vcf/}.\$pval.clumped.SNP.list \${i//bamscl4vcf/}.glm.PrePost.glm.logistic > \$i.tmp; head -n1 \${i//bamscl4vcf/}.glm.PrePost.glm.logistic >\$i.header; cat \$i.header \$i.tmp > \${i//bamscl4vcf/}.\$pval.beta.clumped; rm -f \$i.header; rm -f \$i.tmp ; done ; done" >getbetaclump.sh
+
+
+echo -e "\
+#!/bin/bash
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N runpgs  # job name, anything you want
+#$ -l h_rt=36:00:00
+#$ -M james.e.fifer@gmail.com #your email
+#$ -m be
+#$ -pe omp 18
+#$ -t 1-8:1
+module load R
+readarray -t CMD_ARRAY <  PGScalc
+
+# bash indexes arrays from 0 but SGE_TASK_ID must start from 1.  Subtract 1 from the
+# SGE_TASK_ID to get the correct index into CMD_ARRAY
+INDEX=\$((\$SGE_TASK_ID-1))
+
+# Execute the command for this job array
+echo Executing command:  \"\${CMD_ARRAY[\$INDEX]}\"
+eval \"\${CMD_ARRAY[\$INDEX]}\"
+
+" >PGScalc.sh
+
+>PGScalc
+for pval in 0.3 0.2 0.1 0.01 0.001 0.0001 0.00001 0.000001; do echo "\
+Rscript --vanilla /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/SRC/PGS_MayOct2Plink.R  pval=$pval" >>PGScalc; done 
+
+
+
+## Running the gwas holdouts with May PGS
+echo -e "\
+#!/bin/bash
+#$ -V # inherit the submission environment
+#$ -cwd # start job in submission directory
+#$ -N runpgs  # job name, anything you want
+#$ -l h_rt=36:00:00
+#$ -M james.e.fifer@gmail.com #your email
+#$ -m be
+#$ -pe omp 18
+module load R
+readarray -t CMD_ARRAY <  PGScalc
+
+# bash indexes arrays from 0 but SGE_TASK_ID must start from 1.  Subtract 1 from the
+# SGE_TASK_ID to get the correct index into CMD_ARRAY
+INDEX=\$((\$SGE_TASK_ID-1))
+
+# Execute the command for this job array
+echo Executing command:  \"\${CMD_ARRAY[\$INDEX]}\"
+eval \"\${CMD_ARRAY[\$INDEX]}\"
+
+" >PGScalc.sh
+
+>PGScalc
+echo "\
+Rscript --vanilla /projectnb/wgsgrp/CatFastq/All3Lanes/Analyses/SRC/PGS_MayOct2MayPGS.R" >>PGScalc
+
+
+
+
+
+
+###Randomly select x number of loci from each plink run and to create null distribution of R2s

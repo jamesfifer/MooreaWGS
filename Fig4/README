@@ -1,1 +1,1 @@
-
+Follow PGS_pipeline_MayJuv.txt to generate PGS used for Fig4A. For Figure 4B, loci were selected using the PGS pipeline in Fig3/PGS_pipeline.txt and DAPC was performed using Fig2/angsd_covmat_pcoa_dapc_JF.R
